@@ -1,8 +1,6 @@
 package node
 
 import (
-	"context"
-	"errors"
 	"time"
 
 	log "github.com/sirupsen/logrus"
@@ -12,25 +10,14 @@ import (
 )
 
 func (c *Controller) startTasks(node *panel.NodeInfo) {
-	// fetch node info task
-	c.nodeInfoMonitorPeriodic = &task.Task{
-		Name:     "nodeInfoMonitor",
-		Interval: node.PullInterval,
-		Execute:  c.nodeInfoMonitor,
+	c.syncPeriodic = &task.Task{
+		Name:     "unifiedSyncTask",
+		Interval: syncInterval(node),
+		Execute:  c.unifiedSyncTask,
 		ReloadCh: c.server.ReloadCh,
 	}
-	// fetch user list task
-	c.userReportPeriodic = &task.Task{
-		Name:     "reportUserTrafficTask",
-		Interval: node.PushInterval,
-		Execute:  c.reportUserTrafficTask,
-		ReloadCh: c.server.ReloadCh,
-	}
-	log.WithField("tag", c.tag).Info("Start monitor node status")
-	// delay to start nodeInfoMonitor
-	_ = c.nodeInfoMonitorPeriodic.Start(false)
-	log.WithField("tag", c.tag).Info("Start report node status")
-	_ = c.userReportPeriodic.Start(false)
+	log.WithField("tag", c.tag).Info("Start unified sync task")
+	_ = c.syncPeriodic.Start(false)
 	if node.Security == panel.Tls {
 		switch c.info.Common.CertInfo.CertMode {
 		case "none", "", "file", "self":
@@ -48,19 +35,19 @@ func (c *Controller) startTasks(node *panel.NodeInfo) {
 	}
 }
 
-func (c *Controller) nodeInfoMonitor(ctx context.Context) (err error) {
-	pull, err := c.apiClient.Pull(ctx)
-	if err != nil {
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return err
-		}
-		log.WithFields(log.Fields{
-			"tag": c.tag,
-			"err": err,
-		}).Error("Pull panel data failed")
-		return nil
+func syncInterval(node *panel.NodeInfo) time.Duration {
+	interval := node.PushInterval
+	if interval <= 0 || node.PullInterval > 0 && node.PullInterval < interval {
+		interval = node.PullInterval
 	}
-	if pull.NodeChanged {
+	return interval
+}
+
+func (c *Controller) handlePanelData(syncResult *panel.SyncResult) {
+	if syncResult == nil {
+		return
+	}
+	if syncResult.NodeChanged {
 		log.WithFields(log.Fields{
 			"tag": c.tag,
 		}).Error("Got new node info, reload")
@@ -72,35 +59,34 @@ func (c *Controller) nodeInfoMonitor(ctx context.Context) (err error) {
 		} else {
 			log.Panic("Reload failed")
 		}
-		return nil
+		return
 	}
 	log.WithField("tag", c.tag).Debug("Node info no change")
 
 	// update alive list
-	if pull.AliveChanged {
-		c.limiter.AliveList = pull.Alive
+	if syncResult.AliveChanged {
+		c.limiter.AliveList = syncResult.Alive
 	}
 	// node no changed, check users
-	if !pull.UsersChanged {
+	if !syncResult.UsersChanged {
 		log.WithField("tag", c.tag).Debug("User list no change")
-		return nil
+		return
 	}
-	newU := pull.Users
+	newU := syncResult.Users
 	deleted, added, modified := compareUserList(c.userList, newU)
 	if len(deleted) > 0 {
 		// have deleted users
-		err = c.server.DelUsers(deleted, c.tag, c.info)
-		if err != nil {
+		if err := c.server.DelUsers(deleted, c.tag, c.info); err != nil {
 			log.WithFields(log.Fields{
 				"tag": c.tag,
 				"err": err,
 			}).Error("Delete users failed")
-			return nil
+			return
 		}
 	}
 	if len(added) > 0 {
 		// have added users
-		_, err = c.server.AddUsers(&vCore.AddUsersParams{
+		_, err := c.server.AddUsers(&vCore.AddUsersParams{
 			Tag:      c.tag,
 			NodeInfo: c.info,
 			Users:    added,
@@ -110,7 +96,7 @@ func (c *Controller) nodeInfoMonitor(ctx context.Context) (err error) {
 				"tag": c.tag,
 				"err": err,
 			}).Error("Add users failed")
-			return nil
+			return
 		}
 	}
 	if len(added) > 0 || len(deleted) > 0 || len(modified) > 0 {
@@ -119,5 +105,4 @@ func (c *Controller) nodeInfoMonitor(ctx context.Context) (err error) {
 	}
 	c.userList = newU
 	log.WithField("tag", c.tag).Infof("%d user deleted, %d user added, %d user modified", len(deleted), len(added), len(modified))
-	return nil
 }

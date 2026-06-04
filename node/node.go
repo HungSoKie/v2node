@@ -25,15 +25,15 @@ func New(nodes []conf.NodeConfig) (*Node, error) {
 		if err != nil {
 			return nil, err
 		}
-		pull, err := p.Pull(context.Background())
+		initialSync, err := p.Bootstrap(context.Background())
 		if err != nil {
 			return nil, err
 		}
-		if pull.Node == nil {
-			return nil, fmt.Errorf("pull node info error: missing config segment")
+		if initialSync.Node == nil {
+			return nil, fmt.Errorf("bootstrap node info error: missing config segment")
 		}
-		n.controllers[i] = NewController(p, &node, pull)
-		n.NodeInfos[i] = pull.Node
+		n.controllers[i] = NewController(p, &node, initialSync)
+		n.NodeInfos[i] = initialSync.Node
 	}
 	return n, nil
 }

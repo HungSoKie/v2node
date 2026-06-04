@@ -15,13 +15,14 @@ import (
 // Panel is the interface for different panel's api.
 
 type Client struct {
-	client   *resty.Client
-	APIHost  string
-	Token    string
-	NodeId   int
-	etags    map[string]string
-	UserList *UserListBody
-	AliveMap *AliveMap
+	client     *resty.Client
+	syncClient *resty.Client
+	APIHost    string
+	Token      string
+	NodeId     int
+	etags      map[string]string
+	UserList   *UserListBody
+	AliveMap   *AliveMap
 }
 
 func New(c *conf.NodeConfig) (*Client, error) {
@@ -52,13 +53,16 @@ func New(c *conf.NodeConfig) (*Client, error) {
 		"node_id":   strconv.Itoa(c.NodeID),
 		"token":     c.Key,
 	})
+	syncClient := client.Clone()
+	syncClient.SetRetryCount(0)
 	return &Client{
-		client:   client,
-		Token:    c.Key,
-		APIHost:  c.APIHost,
-		NodeId:   c.NodeID,
-		etags:    make(map[string]string),
-		UserList: &UserListBody{},
-		AliveMap: &AliveMap{},
+		client:     client,
+		syncClient: syncClient,
+		Token:      c.Key,
+		APIHost:    c.APIHost,
+		NodeId:     c.NodeID,
+		etags:      make(map[string]string),
+		UserList:   &UserListBody{},
+		AliveMap:   &AliveMap{},
 	}, nil
 }

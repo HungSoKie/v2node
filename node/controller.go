@@ -14,27 +14,26 @@ import (
 )
 
 type Controller struct {
-	server                  *core.V2Core
-	apiClient               *panel.Client
-	tag                     string
-	limiter                 *limiter.Limiter
-	userList                []panel.UserInfo
-	aliveMap                map[int]int
-	conf                    *conf.NodeConfig
-	info                    *panel.NodeInfo
-	initialPull             *panel.PullResult
-	nodeInfoMonitorPeriodic *task.Task
-	userReportPeriodic      *task.Task
-	renewCertPeriodic       *task.Task
+	server            *core.V2Core
+	apiClient         *panel.Client
+	tag               string
+	limiter           *limiter.Limiter
+	userList          []panel.UserInfo
+	aliveMap          map[int]int
+	conf              *conf.NodeConfig
+	info              *panel.NodeInfo
+	initialSync       *panel.SyncResult
+	syncPeriodic      *task.Task
+	renewCertPeriodic *task.Task
 }
 
 // NewController return a Node controller with default parameters.
-func NewController(api *panel.Client, conf *conf.NodeConfig, initialPull *panel.PullResult) *Controller {
+func NewController(api *panel.Client, conf *conf.NodeConfig, initialSync *panel.SyncResult) *Controller {
 	controller := &Controller{
 		apiClient:   api,
-		info:        initialPull.Node,
+		info:        initialSync.Node,
 		conf:        conf,
-		initialPull: initialPull,
+		initialSync: initialSync,
 	}
 	return controller
 }
@@ -44,30 +43,30 @@ func (c *Controller) Start(x *core.V2Core) error {
 	// Init Core
 	c.server = x
 	var err error
-	pull := c.initialPull
-	c.initialPull = nil
-	if pull == nil {
-		pull, err = c.apiClient.Pull(context.Background())
+	syncResult := c.initialSync
+	c.initialSync = nil
+	if syncResult == nil {
+		syncResult, err = c.apiClient.Bootstrap(context.Background())
 		if err != nil {
-			return fmt.Errorf("pull node data error: %s", err)
+			return fmt.Errorf("bootstrap node data error: %s", err)
 		}
 	}
-	if pull.Node != nil {
-		c.info = pull.Node
+	if syncResult.Node != nil {
+		c.info = syncResult.Node
 	}
 	node := c.info
 	if node == nil {
-		return fmt.Errorf("pull node info error: missing config segment")
+		return fmt.Errorf("bootstrap node info error: missing config segment")
 	}
-	if !pull.UsersChanged {
-		return fmt.Errorf("pull user list error: missing user segment")
+	if !syncResult.UsersChanged {
+		return fmt.Errorf("bootstrap user list error: missing user segment")
 	}
-	c.userList = pull.Users
+	c.userList = syncResult.Users
 	if len(c.userList) == 0 {
 		return errors.New("add users error: not have any user")
 	}
-	if pull.AliveChanged {
-		c.aliveMap = pull.Alive
+	if syncResult.AliveChanged {
+		c.aliveMap = syncResult.Alive
 	}
 	if c.aliveMap == nil {
 		c.aliveMap = make(map[int]int)
@@ -105,11 +104,8 @@ func (c *Controller) Start(x *core.V2Core) error {
 // Close implement the Close() function of the service interface
 func (c *Controller) Close() error {
 	limiter.DeleteLimiter(c.tag)
-	if c.nodeInfoMonitorPeriodic != nil {
-		c.nodeInfoMonitorPeriodic.Close()
-	}
-	if c.userReportPeriodic != nil {
-		c.userReportPeriodic.Close()
+	if c.syncPeriodic != nil {
+		c.syncPeriodic.Close()
 	}
 	if c.renewCertPeriodic != nil {
 		c.renewCertPeriodic.Close()

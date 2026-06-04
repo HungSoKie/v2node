@@ -7,9 +7,7 @@ import (
 	"fmt"
 )
 
-const pullPath = "/api/v2/server/pull"
-
-type PullResult struct {
+type SyncResult struct {
 	Node         *NodeInfo
 	NodeChanged  bool
 	Users        []UserInfo
@@ -18,15 +16,32 @@ type PullResult struct {
 	AliveChanged bool
 }
 
-type pullBody struct {
+type UnifiedResponseError struct {
+	Err error
+}
+
+func (e *UnifiedResponseError) Error() string {
+	return e.Err.Error()
+}
+
+func (e *UnifiedResponseError) Unwrap() error {
+	return e.Err
+}
+
+type unifiedBody struct {
+	Message   string            `json:"message"`
 	Config    json.RawMessage   `json:"config"`
 	User      json.RawMessage   `json:"user"`
 	AliveList json.RawMessage   `json:"alivelist"`
 	Etags     map[string]string `json:"etags"`
 }
 
-type pullRequest struct {
-	Etags map[string]string `json:"etags"`
+type unifiedRequest struct {
+	NodeID     int               `json:"node_id,omitempty"`
+	Etags      map[string]string `json:"etags,omitempty"`
+	Traffic    map[int][]int64   `json:"traffic,omitempty"`
+	Alive      map[int][]string  `json:"alive,omitempty"`
+	NodeStatus *NodeStatus       `json:"nodestatus,omitempty"`
 }
 
 type segmentState struct {
@@ -34,69 +49,112 @@ type segmentState struct {
 	Unchanged   bool `json:"unchanged"`
 }
 
-func (c *Client) Pull(ctx context.Context) (*PullResult, error) {
-	etags := c.etags
-	if etags == nil {
-		etags = make(map[string]string)
+func (c *Client) Bootstrap(ctx context.Context) (*SyncResult, error) {
+	return c.postUnified(ctx, nil, true)
+}
+
+func (c *Client) postUnified(ctx context.Context, body *unifiedRequest, allowRetry bool) (*SyncResult, error) {
+	client := c.client
+	if !allowRetry && c.syncClient != nil {
+		client = c.syncClient
 	}
-	r, err := c.client.R().
-		SetContext(ctx).
-		SetBody(pullRequest{Etags: etags}).
-		ForceContentType("application/json").
-		Post(pullPath)
+
+	req := client.R().SetContext(ctx)
+	if body != nil {
+		req.SetBody(body).ForceContentType("application/json")
+	}
+
+	r, err := req.Post("")
 	if err != nil {
 		return nil, err
 	}
 	if r == nil {
-		return nil, fmt.Errorf("pull failed: received nil response")
+		return nil, fmt.Errorf("unified api failed: received nil response")
 	}
 	if r.StatusCode() == 304 {
-		return &PullResult{}, nil
+		return &SyncResult{}, nil
 	}
 	if !r.IsSuccess() {
-		return nil, fmt.Errorf("pull failed: status %d: %s", r.StatusCode(), string(r.Body()))
+		return nil, fmt.Errorf("unified api failed: status %d: %s", r.StatusCode(), string(r.Body()))
 	}
 
-	var body pullBody
-	if err := json.Unmarshal(r.Body(), &body); err != nil {
-		return nil, fmt.Errorf("decode pull response error: %w", err)
-	}
-	for key, etag := range body.Etags {
-		c.etags[key] = etag
+	var response unifiedBody
+	if err := json.Unmarshal(r.Body(), &response); err != nil {
+		return nil, &UnifiedResponseError{Err: fmt.Errorf("decode unified response error: %w", err)}
 	}
 
-	result := &PullResult{}
-	if segmentHasData(body.Config) {
-		node, err := c.parseNodeInfo(body.Config)
+	result := &SyncResult{}
+	if segmentHasData(response.Config) {
+		node, err := c.parseNodeInfo(response.Config)
 		if err != nil {
-			return nil, err
+			return nil, &UnifiedResponseError{Err: err}
 		}
 		result.Node = node
 		result.NodeChanged = true
 	}
 
-	if segmentHasData(body.User) {
+	if segmentHasData(response.User) {
 		var userList UserListBody
-		if err := json.Unmarshal(body.User, &userList); err != nil {
-			return nil, fmt.Errorf("decode pull user segment error: %w", err)
+		if err := json.Unmarshal(response.User, &userList); err != nil {
+			return nil, &UnifiedResponseError{Err: fmt.Errorf("decode unified user segment error: %w", err)}
 		}
 		result.Users = userList.Users
 		result.UsersChanged = true
 	}
 
-	if segmentHasData(body.AliveList) {
-		var alive AliveMap
-		if err := json.Unmarshal(body.AliveList, &alive); err != nil {
-			return nil, fmt.Errorf("decode pull alivelist segment error: %w", err)
+	if segmentHasData(response.AliveList) {
+		alive, err := parseAliveList(response.AliveList)
+		if err != nil {
+			return nil, &UnifiedResponseError{Err: fmt.Errorf("decode unified alivelist segment error: %w", err)}
 		}
-		if alive.Alive == nil {
-			alive.Alive = make(map[int]int)
-		}
-		result.Alive = alive.Alive
+		result.Alive = alive
 		result.AliveChanged = true
 	}
 
+	if c.etags == nil {
+		c.etags = make(map[string]string)
+	}
+	for key, etag := range response.Etags {
+		c.etags[key] = etag
+	}
+
 	return result, nil
+}
+
+func (c *Client) copyEtags() map[string]string {
+	if len(c.etags) == 0 {
+		return nil
+	}
+	etags := make(map[string]string, len(c.etags))
+	for key, etag := range c.etags {
+		etags[key] = etag
+	}
+	return etags
+}
+
+func parseAliveList(raw json.RawMessage) (map[int]int, error) {
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &object); err == nil {
+		if wrapped, ok := object["alive"]; ok {
+			alive := make(map[int]int)
+			if !segmentHasData(wrapped) {
+				return alive, nil
+			}
+			if err := json.Unmarshal(wrapped, &alive); err != nil {
+				return nil, err
+			}
+			return alive, nil
+		}
+	}
+
+	alive := make(map[int]int)
+	if !segmentHasData(raw) {
+		return alive, nil
+	}
+	if err := json.Unmarshal(raw, &alive); err != nil {
+		return nil, err
+	}
+	return alive, nil
 }
 
 func segmentHasData(raw json.RawMessage) bool {

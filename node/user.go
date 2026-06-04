@@ -8,7 +8,7 @@ import (
 	panel "github.com/wyx2685/v2node/api/v2board"
 )
 
-func (c *Controller) reportUserTrafficTask(ctx context.Context) (err error) {
+func (c *Controller) unifiedSyncTask(ctx context.Context) (err error) {
 	var reportmin = 0
 	var devicemin = 0
 	if c.info.Common.BaseConfig != nil {
@@ -47,18 +47,22 @@ func (c *Controller) reportUserTrafficTask(ctx context.Context) (err error) {
 		onlineReported = len(result)
 	}
 
-	err = c.apiClient.Push(ctx, userTraffic, aliveData)
+	syncResult, err := c.apiClient.Sync(ctx, userTraffic, aliveData)
 	if err != nil {
-		c.server.RestoreUserTrafficSlice(c.tag, userTraffic)
+		var responseErr *panel.UnifiedResponseError
+		if !errors.As(err, &responseErr) {
+			c.server.RestoreUserTrafficSlice(c.tag, userTraffic)
+		}
 		log.WithFields(log.Fields{
 			"tag": c.tag,
 			"err": err,
-		}).Info("Push node report failed")
+		}).Info("Unified panel sync failed")
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return err
 		}
 		return nil
 	}
+	c.handlePanelData(syncResult)
 	if len(userTraffic) > 0 {
 		log.WithField("tag", c.tag).Infof("Report %d users traffic", len(userTraffic))
 		//log.WithField("tag", c.tag).Debugf("User traffic: %+v", userTraffic)
