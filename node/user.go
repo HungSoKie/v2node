@@ -15,29 +15,18 @@ func (c *Controller) reportUserTrafficTask(ctx context.Context) (err error) {
 		reportmin = c.info.Common.BaseConfig.NodeReportMinTraffic
 		devicemin = c.info.Common.BaseConfig.DeviceOnlineMinTraffic
 	}
-	userTraffic, _ := c.server.GetUserTrafficSlice(c.tag, reportmin)
-	if len(userTraffic) > 0 {
-		err = c.apiClient.ReportUserTraffic(ctx, userTraffic)
-		if err != nil {
-			log.WithFields(log.Fields{
-				"tag": c.tag,
-				"err": err,
-			}).Info("Report user traffic failed")
-			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-				return err
-			}
-		} else {
-			log.WithField("tag", c.tag).Infof("Report %d users traffic", len(userTraffic))
-			//log.WithField("tag", c.tag).Debugf("User traffic: %+v", userTraffic)
-		}
-	}
+	userTraffic, _ := c.server.DrainUserTrafficSlice(c.tag, reportmin)
 
+	aliveData := make(map[int][]string)
+	var onlineTotal int
+	var onlineReported int
 	if onlineDevice, err := c.limiter.GetOnlineDevice(); err != nil {
 		log.WithFields(log.Fields{
 			"tag": c.tag,
 			"err": err,
 		}).Info("Get online device failed")
 	} else if len(*onlineDevice) > 0 {
+		onlineTotal = len(*onlineDevice)
 		var result []panel.OnlineUser
 		var nocountUID = make(map[int]struct{})
 		for _, traffic := range userTraffic {
@@ -51,24 +40,31 @@ func (c *Controller) reportUserTrafficTask(ctx context.Context) (err error) {
 				result = append(result, online)
 			}
 		}
-		data := make(map[int][]string)
 		for _, onlineuser := range result {
 			// json structure: { UID1:["ip1","ip2"],UID2:["ip3","ip4"] }
-			data[onlineuser.UID] = append(data[onlineuser.UID], onlineuser.IP)
+			aliveData[onlineuser.UID] = append(aliveData[onlineuser.UID], onlineuser.IP)
 		}
-		if len(data) != 0 {
-			err := c.apiClient.ReportNodeOnlineUsers(ctx, &data)
-			if err != nil {
-				log.WithFields(log.Fields{
-					"tag": c.tag,
-					"err": err,
-				}).Info("Report online users failed")
-				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-					return err
-				}
-			}
+		onlineReported = len(result)
+	}
+
+	err = c.apiClient.Push(ctx, userTraffic, aliveData)
+	if err != nil {
+		c.server.RestoreUserTrafficSlice(c.tag, userTraffic)
+		log.WithFields(log.Fields{
+			"tag": c.tag,
+			"err": err,
+		}).Info("Push node report failed")
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return err
 		}
-		log.WithField("tag", c.tag).Infof("Total %d online users, %d Reported", len(*onlineDevice), len(result))
+		return nil
+	}
+	if len(userTraffic) > 0 {
+		log.WithField("tag", c.tag).Infof("Report %d users traffic", len(userTraffic))
+		//log.WithField("tag", c.tag).Debugf("User traffic: %+v", userTraffic)
+	}
+	if onlineTotal > 0 {
+		log.WithField("tag", c.tag).Infof("Total %d online users, %d Reported", onlineTotal, onlineReported)
 	}
 
 	return nil

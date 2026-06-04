@@ -15,15 +15,13 @@ import (
 // Panel is the interface for different panel's api.
 
 type Client struct {
-	client           *resty.Client
-	APIHost          string
-	Token            string
-	NodeId           int
-	nodeEtag         string
-	userEtag         string
-	responseBodyHash string
-	UserList         *UserListBody
-	AliveMap         *AliveMap
+	client   *resty.Client
+	APIHost  string
+	Token    string
+	NodeId   int
+	etags    map[string]string
+	UserList *UserListBody
+	AliveMap *AliveMap
 }
 
 func New(c *conf.NodeConfig) (*Client, error) {
@@ -33,7 +31,7 @@ func New(c *conf.NodeConfig) (*Client, error) {
 		retryCount = *c.RetryCount
 	}
 	client.SetRetryCount(retryCount)
-	client.SetHeader("User-Agent", fmt.Sprintf("v2node go-resty/%s (https://github.com/go-resty/resty)", resty.Version))
+	client.SetHeader("User-Agent", fmt.Sprintf("v2node unified go-resty/%s (https://github.com/go-resty/resty)", resty.Version))
 	if c.Timeout > 0 {
 		client.SetTimeout(time.Duration(c.Timeout) * time.Second)
 	} else {
@@ -59,6 +57,7 @@ func New(c *conf.NodeConfig) (*Client, error) {
 		Token:    c.Key,
 		APIHost:  c.APIHost,
 		NodeId:   c.NodeID,
+		etags:    make(map[string]string),
 		UserList: &UserListBody{},
 		AliveMap: &AliveMap{},
 	}, nil

@@ -22,17 +22,19 @@ type Controller struct {
 	aliveMap                map[int]int
 	conf                    *conf.NodeConfig
 	info                    *panel.NodeInfo
+	initialPull             *panel.PullResult
 	nodeInfoMonitorPeriodic *task.Task
 	userReportPeriodic      *task.Task
 	renewCertPeriodic       *task.Task
 }
 
 // NewController return a Node controller with default parameters.
-func NewController(api *panel.Client, conf *conf.NodeConfig, info *panel.NodeInfo) *Controller {
+func NewController(api *panel.Client, conf *conf.NodeConfig, initialPull *panel.PullResult) *Controller {
 	controller := &Controller{
-		apiClient: api,
-		info:      info,
-		conf:      conf,
+		apiClient:   api,
+		info:        initialPull.Node,
+		conf:        conf,
+		initialPull: initialPull,
 	}
 	return controller
 }
@@ -42,26 +44,33 @@ func (c *Controller) Start(x *core.V2Core) error {
 	// Init Core
 	c.server = x
 	var err error
-	// First fetch Node Info
+	pull := c.initialPull
+	c.initialPull = nil
+	if pull == nil {
+		pull, err = c.apiClient.Pull(context.Background())
+		if err != nil {
+			return fmt.Errorf("pull node data error: %s", err)
+		}
+	}
+	if pull.Node != nil {
+		c.info = pull.Node
+	}
 	node := c.info
 	if node == nil {
-		c.info, err = c.apiClient.GetNodeInfo(context.Background())
-		if err != nil {
-			return fmt.Errorf("get node info error: %s", err)
-		}
-		node = c.info
+		return fmt.Errorf("pull node info error: missing config segment")
 	}
-	// Update user
-	c.userList, err = c.apiClient.GetUserList(context.Background())
-	if err != nil {
-		return fmt.Errorf("get user list error: %s", err)
+	if !pull.UsersChanged {
+		return fmt.Errorf("pull user list error: missing user segment")
 	}
+	c.userList = pull.Users
 	if len(c.userList) == 0 {
 		return errors.New("add users error: not have any user")
 	}
-	c.aliveMap, err = c.apiClient.GetUserAlive(context.Background())
-	if err != nil {
-		return fmt.Errorf("failed to get user alive list: %s", err)
+	if pull.AliveChanged {
+		c.aliveMap = pull.Alive
+	}
+	if c.aliveMap == nil {
+		c.aliveMap = make(map[int]int)
 	}
 	c.tag = node.Tag
 

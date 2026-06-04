@@ -25,12 +25,15 @@ func New(nodes []conf.NodeConfig) (*Node, error) {
 		if err != nil {
 			return nil, err
 		}
-		info, err := p.GetNodeInfo(context.Background())
+		pull, err := p.Pull(context.Background())
 		if err != nil {
 			return nil, err
 		}
-		n.controllers[i] = NewController(p, &node, info)
-		n.NodeInfos[i] = info
+		if pull.Node == nil {
+			return nil, fmt.Errorf("pull node info error: missing config segment")
+		}
+		n.controllers[i] = NewController(p, &node, pull)
+		n.NodeInfos[i] = pull.Node
 	}
 	return n, nil
 }

@@ -49,8 +49,7 @@ func (c *Controller) startTasks(node *panel.NodeInfo) {
 }
 
 func (c *Controller) nodeInfoMonitor(ctx context.Context) (err error) {
-	// get node info
-	newN, err := c.apiClient.GetNodeInfo(ctx)
+	pull, err := c.apiClient.Pull(ctx)
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return err
@@ -58,10 +57,10 @@ func (c *Controller) nodeInfoMonitor(ctx context.Context) (err error) {
 		log.WithFields(log.Fields{
 			"tag": c.tag,
 			"err": err,
-		}).Error("Get node info failed")
+		}).Error("Pull panel data failed")
 		return nil
 	}
-	if newN != nil {
+	if pull.NodeChanged {
 		log.WithFields(log.Fields{
 			"tag": c.tag,
 		}).Error("Got new node info, reload")
@@ -73,43 +72,20 @@ func (c *Controller) nodeInfoMonitor(ctx context.Context) (err error) {
 		} else {
 			log.Panic("Reload failed")
 		}
+		return nil
 	}
 	log.WithField("tag", c.tag).Debug("Node info no change")
 
-	// get user info
-	newU, err := c.apiClient.GetUserList(ctx)
-	if err != nil {
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return err
-		}
-		log.WithFields(log.Fields{
-			"tag": c.tag,
-			"err": err,
-		}).Error("Get user list failed")
-		return nil
-	}
-	// get user alive
-	newA, err := c.apiClient.GetUserAlive(ctx)
-	if err != nil {
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return err
-		}
-		log.WithFields(log.Fields{
-			"tag": c.tag,
-			"err": err,
-		}).Error("Get alive list failed")
-		return nil
-	}
-
 	// update alive list
-	if newA != nil {
-		c.limiter.AliveList = newA
+	if pull.AliveChanged {
+		c.limiter.AliveList = pull.Alive
 	}
 	// node no changed, check users
-	if len(newU) == 0 {
+	if !pull.UsersChanged {
 		log.WithField("tag", c.tag).Debug("User list no change")
 		return nil
 	}
+	newU := pull.Users
 	deleted, added, modified := compareUserList(c.userList, newU)
 	if len(deleted) > 0 {
 		// have deleted users

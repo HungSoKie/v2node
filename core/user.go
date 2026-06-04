@@ -72,7 +72,7 @@ func (vc *V2Core) DelUsers(users []panel.UserInfo, tag string, _ *panel.NodeInfo
 	return nil
 }
 
-func (vc *V2Core) GetUserTrafficSlice(tag string, mintraffic int) ([]panel.UserTraffic, error) {
+func (vc *V2Core) DrainUserTrafficSlice(tag string, mintraffic int) ([]panel.UserTraffic, error) {
 	trafficSlice := make([]panel.UserTraffic, 0)
 	vc.users.mapLock.RLock()
 	defer vc.users.mapLock.RUnlock()
@@ -84,8 +84,8 @@ func (vc *V2Core) GetUserTrafficSlice(tag string, mintraffic int) ([]panel.UserT
 			up := traffic.UpCounter.Load()
 			down := traffic.DownCounter.Load()
 			if up+down > int64(mintraffic*1000) {
-				traffic.UpCounter.Store(0)
-				traffic.DownCounter.Store(0)
+				up = traffic.UpCounter.Swap(0)
+				down = traffic.DownCounter.Swap(0)
 				if vc.users.uidMap[email] == 0 {
 					c.Delete(email)
 					return true
@@ -94,6 +94,7 @@ func (vc *V2Core) GetUserTrafficSlice(tag string, mintraffic int) ([]panel.UserT
 					UID:      vc.users.uidMap[email],
 					Upload:   up,
 					Download: down,
+					Email:    email,
 				})
 			}
 			return true
@@ -104,6 +105,23 @@ func (vc *V2Core) GetUserTrafficSlice(tag string, mintraffic int) ([]panel.UserT
 		return trafficSlice, nil
 	}
 	return nil, nil
+}
+
+func (vc *V2Core) RestoreUserTrafficSlice(tag string, trafficSlice []panel.UserTraffic) {
+	if len(trafficSlice) == 0 {
+		return
+	}
+	if v, ok := vc.dispatcher.Counter.Load(tag); ok {
+		c := v.(*counter.TrafficCounter)
+		for i := range trafficSlice {
+			if trafficSlice[i].Email == "" {
+				continue
+			}
+			traffic := c.GetCounter(trafficSlice[i].Email)
+			traffic.UpCounter.Add(trafficSlice[i].Upload)
+			traffic.DownCounter.Add(trafficSlice[i].Download)
+		}
+	}
 }
 
 func (v *V2Core) AddUsers(p *AddUsersParams) (added int, err error) {

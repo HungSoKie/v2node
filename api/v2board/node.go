@@ -1,17 +1,13 @@
 package panel
 
 import (
-	"context"
-	"crypto/sha256"
-	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
 	"time"
-
-	"encoding/json"
 )
 
 // Security type
@@ -113,49 +109,18 @@ type EncSettings struct {
 	PrivateKey    string `json:"private_key"`
 }
 
-func (c *Client) GetNodeInfo(ctx context.Context) (node *NodeInfo, err error) {
-	const path = "/api/v2/server/config"
-	r, err := c.client.
-		R().
-		SetContext(ctx).
-		SetHeader("If-None-Match", c.nodeEtag).
-		ForceContentType("application/json").
-		Get(path)
-	if err != nil {
-		return nil, err
-	}
-	if r == nil {
-		return nil, fmt.Errorf("received nil response")
-	}
-
-	if r.StatusCode() == 304 {
-		return nil, nil
-	}
-	hash := sha256.Sum256(r.Body())
-	newBodyHash := hex.EncodeToString(hash[:])
-	if c.responseBodyHash == newBodyHash {
-		return nil, nil
-	}
-	c.responseBodyHash = newBodyHash
-	c.nodeEtag = r.Header().Get("ETag")
-
-	if r != nil {
-		defer func() {
-			if r.RawBody() != nil {
-				r.RawBody().Close()
-			}
-		}()
-	} else {
-		return nil, fmt.Errorf("received nil response")
-	}
+func (c *Client) parseNodeInfo(body []byte) (node *NodeInfo, err error) {
 	node = &NodeInfo{
 		Id: c.NodeId,
 	}
 	// parse protocol params
 	cm := &CommonNode{}
-	err = json.Unmarshal(r.Body(), cm)
+	err = json.Unmarshal(body, cm)
 	if err != nil {
 		return nil, fmt.Errorf("decode node params error: %s", err)
+	}
+	if cm.BaseConfig == nil {
+		return nil, fmt.Errorf("decode node params error: missing base_config")
 	}
 	switch cm.Protocol {
 	case "vmess", "trojan", "hysteria2", "tuic", "anytls", "vless":
