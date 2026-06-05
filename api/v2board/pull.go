@@ -33,12 +33,12 @@ type unifiedBody struct {
 	Config    json.RawMessage   `json:"config"`
 	User      json.RawMessage   `json:"user"`
 	AliveList json.RawMessage   `json:"alivelist"`
-	Etags     map[string]string `json:"etags"`
+	Etag      map[string]string `json:"etag"`
 }
 
 type unifiedRequest struct {
 	NodeID     int               `json:"node_id,omitempty"`
-	Etags      map[string]string `json:"etags,omitempty"`
+	Etag       map[string]string `json:"etag,omitempty"`
 	Traffic    map[int][]int64   `json:"traffic,omitempty"`
 	Alive      map[int][]string  `json:"alive,omitempty"`
 	NodeStatus *NodeStatus       `json:"nodestatus,omitempty"`
@@ -94,11 +94,11 @@ func (c *Client) postUnified(ctx context.Context, body *unifiedRequest, allowRet
 	}
 
 	if segmentHasData(response.User) {
-		var userList UserListBody
-		if err := json.Unmarshal(response.User, &userList); err != nil {
+		var users []UserInfo
+		if err := json.Unmarshal(response.User, &users); err != nil {
 			return nil, &UnifiedResponseError{Err: fmt.Errorf("decode unified user segment error: %w", err)}
 		}
-		result.Users = userList.Users
+		result.Users = users
 		result.UsersChanged = true
 	}
 
@@ -114,7 +114,7 @@ func (c *Client) postUnified(ctx context.Context, body *unifiedRequest, allowRet
 	if c.etags == nil {
 		c.etags = make(map[string]string)
 	}
-	for key, etag := range response.Etags {
+	for key, etag := range response.Etag {
 		c.etags[key] = etag
 	}
 

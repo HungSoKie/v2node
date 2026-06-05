@@ -18,7 +18,7 @@ func (c *Client) Sync(ctx context.Context, userTraffic []UserTraffic, alive map[
 
 	body := &unifiedRequest{
 		NodeID: c.NodeId,
-		Etags:  c.copyEtags(),
+		Etag:   c.copyEtags(),
 		NodeStatus: &NodeStatus{
 			Online:    true,
 			Timestamp: time.Now().Unix(),
