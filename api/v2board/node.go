@@ -28,11 +28,18 @@ type NodeInfo struct {
 }
 
 type CommonNode struct {
-	Protocol   string      `json:"protocol"`
-	ListenIP   string      `json:"listen_ip"`
-	ServerPort int         `json:"server_port"`
-	Routes     []Route     `json:"routes"`
-	BaseConfig *BaseConfig `json:"base_config"`
+	Protocol   string  `json:"protocol"`
+	ListenIP   string  `json:"listen_ip"`
+	ServerPort int     `json:"server_port"`
+	Routes     []Route `json:"routes"`
+	// RouteCase and OutboundCase are raw xray-core conf.RouterConfig /
+	// []conf.OutboundDetourConfig JSON delivered directly by the panel, for
+	// operators who need routing/outbound expressiveness beyond the Routes
+	// action DSL (balancers, compound rule conditions, arbitrary outbound
+	// protocols). See core.GetCustomConfig.
+	RouteCase    json.RawMessage `json:"route_case,omitempty"`
+	OutboundCase json.RawMessage `json:"outbound_case,omitempty"`
+	BaseConfig   *BaseConfig     `json:"base_config"`
 	//vless vmess trojan
 	Tls                  int         `json:"tls"`
 	TlsSettings          TlsSettings `json:"tls_settings"`
