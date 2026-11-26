@@ -247,51 +247,132 @@ EOF
         else
             systemctl restart v2node
         fi
-        sleep 2
-        check_status
-        echo -e ""
-        if [[ $? == 0 ]]; then
-            echo -e "${green}v2node 重启成功${plain}"
-        else
-            echo -e "${red}v2node 可能启动失败，请使用 v2node log 查看日志信息${plain}"
-        fi
+        report_v2node_started
 }
+
+# 启动或重启之后调用，服务没起来时返回 1
+report_v2node_started() {
+    local status=0
+
+    sleep 2
+    check_status || status=$?
+    echo -e ""
+    if [[ $status == 0 ]]; then
+        echo -e "${green}v2node 重启成功${plain}"
+    else
+        echo -e "${red}v2node 可能启动失败，请使用 v2node log 查看日志信息${plain}"
+        return 1
+    fi
+}
+
+# 新版本全部放在临时目录里准备，出错时删掉临时目录，现有安装保持原样
+install_failed() {
+    echo -e "${red}$1，现有的 v2node 未做改动${plain}"
+    cd /
+    rm -rf "${staging_dir}"
+    exit 1
+}
+
+download_v2node_release() {
+    local url="$1"
+    local destination="$2"
+    local pipe_status=()
+
+    curl -fsSL "$url" | pv -s 30M -W -N "下载进度" > "$destination"
+    pipe_status=("${PIPESTATUS[@]}")
+    [[ ${pipe_status[0]} -eq 0 && ${pipe_status[1]} -eq 0 ]]
+}
+
+# 下载、解压并确认新程序能运行
+prepare_v2node_release() {
+    local version_param="$1"
+    local url=""
+    local required_file=""
+
+    if [[ -z "$version_param" ]] ; then
+        last_version=$(curl -fsSL "https://api.github.com/repos/HungSoKie/v2node/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+        if [[ -z "$last_version" ]]; then
+            install_failed "检测 v2node 版本失败，可能是超出 Github API 限制，请稍后再试，或手动指定 v2node 版本安装"
+        fi
+        echo -e "${green}检测到最新版本：${last_version}，开始安装...${plain}"
+    else
+        last_version=$version_param
+    fi
+
+    url="https://github.com/HungSoKie/v2node/releases/download/${last_version}/v2node-linux-${arch}.zip"
+    download_v2node_release "$url" "${staging_dir}/v2node-linux.zip" ||
+        install_failed "下载 v2node ${last_version} 失败，请确保此版本存在且服务器能够下载 Github 的文件"
+
+    unzip -oq "${staging_dir}/v2node-linux.zip" -d "${staging_dir}" || install_failed "解压 v2node 失败"
+    rm -f "${staging_dir}/v2node-linux.zip"
+
+    for required_file in v2node geoip.dat geosite.dat; do
+        [[ -s "${staging_dir}/${required_file}" ]] || install_failed "安装包里缺少 ${required_file}"
+    done
+
+    chmod +x "${staging_dir}/v2node"
+    "${staging_dir}/v2node" version >/dev/null 2>&1 || install_failed "新下载的 v2node 无法运行"
+}
+
+stop_v2node_service() {
+    if [[ x"${release}" == x"alpine" ]]; then
+        [[ -f /etc/init.d/v2node ]] && service v2node stop
+    else
+        [[ -f /etc/systemd/system/v2node.service ]] && systemctl stop v2node
+    fi
+    return 0
+}
+
+replace_v2node_directory() {
+    local backup_dir="/usr/local/v2node.old"
+
+    # mktemp 建出来的目录只有 root 能进
+    chmod 755 "${staging_dir}" || install_failed "设置目录权限失败"
+    stop_v2node_service
+
+    rm -rf "${backup_dir}"
+    if [[ -e /usr/local/v2node ]]; then
+        mv /usr/local/v2node "${backup_dir}" || install_failed "备份旧版本失败"
+    fi
+
+    if ! mv "${staging_dir}" /usr/local/v2node; then
+        [[ -e "${backup_dir}" ]] && mv "${backup_dir}" /usr/local/v2node
+        install_failed "替换 v2node 目录失败"
+    fi
+
+    rm -rf "${backup_dir}"
+}
+
+# 下载失败时保留原来的管理脚本
+install_v2node_manager() {
+    local tmp_file=""
+
+    tmp_file=$(mktemp /tmp/v2node_manager.XXXXXX) || return 1
+    if curl -fsSL https://raw.githubusercontent.com/HungSoKie/v2node/main/script/v2node.sh -o "$tmp_file" &&
+        head -n 1 "$tmp_file" | grep '^#!' >/dev/null; then
+        cp "$tmp_file" /usr/bin/v2node
+        chmod 755 /usr/bin/v2node
+    else
+        echo -e "${yellow}管理脚本下载失败，/usr/bin/v2node 未更新${plain}"
+    fi
+    rm -f "$tmp_file"
+}
+
 
 install_v2node() {
     local version_param="$1"
-    if [[ -e /usr/local/v2node/ ]]; then
-        rm -rf /usr/local/v2node/
-    fi
+    local service_failed=false
 
-    mkdir /usr/local/v2node/ -p
-    cd /usr/local/v2node/
+    mkdir -p /usr/local
+    staging_dir=$(mktemp -d /usr/local/v2node.new.XXXXXX) || {
+        echo -e "${red}创建临时目录失败${plain}"
+        exit 1
+    }
 
-    if  [[ -z "$version_param" ]] ; then
-        last_version=$(curl -Ls "https://api.github.com/repos/HungSoKie/v2node/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
-        if [[ ! -n "$last_version" ]]; then
-            echo -e "${red}检测 v2node 版本失败，可能是超出 Github API 限制，请稍后再试，或手动指定 v2node 版本安装${plain}"
-            exit 1
-        fi
-        echo -e "${green}检测到最新版本：${last_version}，开始安装...${plain}"
-        url="https://github.com/HungSoKie/v2node/releases/download/${last_version}/v2node-linux-${arch}.zip"
-        curl -sL "$url" | pv -s 30M -W -N "下载进度" > /usr/local/v2node/v2node-linux.zip
-        if [[ $? -ne 0 ]]; then
-            echo -e "${red}下载 v2node 失败，请确保你的服务器能够下载 Github 的文件${plain}"
-            exit 1
-        fi
-    else
-    last_version=$version_param
-        url="https://github.com/HungSoKie/v2node/releases/download/${last_version}/v2node-linux-${arch}.zip"
-        curl -sL "$url" | pv -s 30M -W -N "下载进度" > /usr/local/v2node/v2node-linux.zip
-        if [[ $? -ne 0 ]]; then
-            echo -e "${red}下载 v2node $1 失败，请确保此版本存在${plain}"
-            exit 1
-        fi
-    fi
+    prepare_v2node_release "$version_param"
+    replace_v2node_directory
 
-    unzip v2node-linux.zip
-    rm v2node-linux.zip -f
-    chmod +x v2node
+    cd /usr/local/v2node/ || exit 1
     mkdir /etc/v2node/ -p
     cp geoip.dat /etc/v2node/
     cp geosite.dat /etc/v2node/
@@ -350,7 +431,7 @@ EOF
     if [[ ! -f /etc/v2node/config.json ]]; then
         # 如果通过 CLI 传入了完整参数，则直接生成配置并跳过交互
         if [[ -n "$API_HOST_ARG" && -n "$NODE_ID_ARG" && -n "$API_KEY_ARG" ]]; then
-            generate_v2node_config "$API_HOST_ARG" "$NODE_ID_ARG" "$API_KEY_ARG"
+            generate_v2node_config "$API_HOST_ARG" "$NODE_ID_ARG" "$API_KEY_ARG" || service_failed=true
             echo -e "${green}已根据参数生成 /etc/v2node/config.json${plain}"
             first_install=false
         else
@@ -363,20 +444,12 @@ EOF
         else
             systemctl start v2node
         fi
-        sleep 2
-        check_status
-        echo -e ""
-        if [[ $? == 0 ]]; then
-            echo -e "${green}v2node 重启成功${plain}"
-        else
-            echo -e "${red}v2node 可能启动失败，请使用 v2node log 查看日志信息${plain}"
-        fi
+        report_v2node_started || service_failed=true
         first_install=false
     fi
 
 
-    curl -o /usr/bin/v2node -Ls https://raw.githubusercontent.com/HungSoKie/v2node/main/script/v2node.sh
-    chmod +x /usr/bin/v2node
+    install_v2node_manager
 
     cd $cur_dir
     rm -f install.sh
@@ -411,11 +484,14 @@ EOF
             read -rp "节点通讯密钥: " api_key
 
             # 生成配置文件（覆盖可能从包中复制的模板）
-            generate_v2node_config "$api_host" "$node_id" "$api_key"
+            generate_v2node_config "$api_host" "$node_id" "$api_key" || service_failed=true
         else
             echo "${green}已跳过自动生成配置。如需后续生成，可执行: v2node generate${plain}"
         fi
     fi
+
+    # 调用方靠退出状态判断安装是否成功
+    [[ $service_failed == false ]]
 }
 
 parse_args "$@"
